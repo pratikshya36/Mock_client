@@ -1,0 +1,304 @@
+var _extends = Object.assign || function (target) { for (var i = 1; i < arguments.length; i++) { var source = arguments[i]; for (var key in source) { if (Object.prototype.hasOwnProperty.call(source, key)) { target[key] = source[key]; } } } return target; };
+
+function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
+
+function _possibleConstructorReturn(self, call) { if (!self) { throw new ReferenceError("this hasn't been initialised - super() hasn't been called"); } return call && (typeof call === "object" || typeof call === "function") ? call : self; }
+
+function _inherits(subClass, superClass) { if (typeof superClass !== "function" && superClass !== null) { throw new TypeError("Super expression must either be null or a function, not " + typeof superClass); } subClass.prototype = Object.create(superClass && superClass.prototype, { constructor: { value: subClass, enumerable: false, writable: true, configurable: true } }); if (superClass) Object.setPrototypeOf ? Object.setPrototypeOf(subClass, superClass) : subClass.__proto__ = superClass; }
+
+var _require = require('@uppy/core'),
+    Plugin = _require.Plugin;
+
+var dataURItoBlob = require('@uppy/utils/lib/dataURItoBlob');
+var isObjectURL = require('@uppy/utils/lib/isObjectURL');
+var isPreviewSupported = require('@uppy/utils/lib/isPreviewSupported');
+
+/**
+ * The Thumbnail Generator plugin
+ */
+
+module.exports = function (_Plugin) {
+  _inherits(ThumbnailGenerator, _Plugin);
+
+  function ThumbnailGenerator(uppy, opts) {
+    _classCallCheck(this, ThumbnailGenerator);
+
+    var _this = _possibleConstructorReturn(this, _Plugin.call(this, uppy, opts));
+
+    _this.type = 'thumbnail';
+    _this.id = _this.opts.id || 'ThumbnailGenerator';
+    _this.title = 'Thumbnail Generator';
+    _this.queue = [];
+    _this.queueProcessing = false;
+    _this.defaultThumbnailDimension = 200;
+
+    var defaultOptions = {
+      thumbnailWidth: null,
+      thumbnailHeight: null
+    };
+
+    _this.opts = _extends({}, defaultOptions, opts);
+
+    _this.onFileAdded = _this.onFileAdded.bind(_this);
+    _this.onFileRemoved = _this.onFileRemoved.bind(_this);
+    _this.onRestored = _this.onRestored.bind(_this);
+    return _this;
+  }
+
+  /**
+   * Create a thumbnail for the given Uppy file object.
+   *
+   * @param {{data: Blob}} file
+   * @param {number} width
+   * @return {Promise}
+   */
+
+
+  ThumbnailGenerator.prototype.createThumbnail = function createThumbnail(file, targetWidth, targetHeight) {
+    var _this2 = this;
+
+    var originalUrl = URL.createObjectURL(file.data);
+
+    var onload = new Promise(function (resolve, reject) {
+      var image = new Image();
+      image.src = originalUrl;
+      image.addEventListener('load', function () {
+        URL.revokeObjectURL(originalUrl);
+        resolve(image);
+      });
+      image.addEventListener('error', function (event) {
+        URL.revokeObjectURL(originalUrl);
+        reject(event.error || new Error('Could not create thumbnail'));
+      });
+    });
+
+    return onload.then(function (image) {
+      var dimensions = _this2.getProportionalDimensions(image, targetWidth, targetHeight);
+      var canvas = _this2.resizeImage(image, dimensions.width, dimensions.height);
+      return _this2.canvasToBlob(canvas, 'image/png');
+    }).then(function (blob) {
+      return URL.createObjectURL(blob);
+    });
+  };
+
+  /**
+   * Get the new calculated dimensions for the given image and a target width
+   * or height. If both width and height are given, only width is taken into
+   * account. If neither width nor height are given, the default dimension
+   * is used.
+   */
+
+
+  ThumbnailGenerator.prototype.getProportionalDimensions = function getProportionalDimensions(img, width, height) {
+    var aspect = img.width / img.height;
+
+    if (width != null) {
+      return {
+        width: width,
+        height: Math.round(width / aspect)
+      };
+    }
+
+    if (height != null) {
+      return {
+        width: Math.round(height * aspect),
+        height: height
+      };
+    }
+
+    return {
+      width: this.defaultThumbnailDimension,
+      height: Math.round(this.defaultThumbnailDimension / aspect)
+    };
+  };
+
+  /**
+   * Make sure the image doesn’t exceed browser/device canvas limits.
+   * For ios with 256 RAM and ie
+   */
+
+
+  ThumbnailGenerator.prototype.protect = function protect(image) {
+    // https://stackoverflow.com/questions/6081483/maximum-size-of-a-canvas-element
+
+    var ratio = image.width / image.height;
+
+    var maxSquare = 5000000; // ios max canvas square
+    var maxSize = 4096; // ie max canvas dimensions
+
+    var maxW = Math.floor(Math.sqrt(maxSquare * ratio));
+    var maxH = Math.floor(maxSquare / Math.sqrt(maxSquare * ratio));
+    if (maxW > maxSize) {
+      maxW = maxSize;
+      maxH = Math.round(maxW / ratio);
+    }
+    if (maxH > maxSize) {
+      maxH = maxSize;
+      maxW = Math.round(ratio * maxH);
+    }
+    if (image.width > maxW) {
+      var canvas = document.createElement('canvas');
+      canvas.width = maxW;
+      canvas.height = maxH;
+      canvas.getContext('2d').drawImage(image, 0, 0, maxW, maxH);
+      image = canvas;
+    }
+
+    return image;
+  };
+
+  /**
+   * Resize an image to the target `width` and `height`.
+   *
+   * Returns a Canvas with the resized image on it.
+   */
+
+
+  ThumbnailGenerator.prototype.resizeImage = function resizeImage(image, targetWidth, targetHeight) {
+    // Resizing in steps refactored to use a solution from
+    // https://blog.uploadcare.com/image-resize-in-browsers-is-broken-e38eed08df01
+
+    image = this.protect(image);
+
+    // Use the Polyfill for Math.log2() since IE doesn't support log2
+    // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Math/log2#Polyfill
+    var steps = Math.ceil(Math.log(image.width / targetWidth) * Math.LOG2E);
+    if (steps < 1) {
+      steps = 1;
+    }
+    var sW = targetWidth * Math.pow(2, steps - 1);
+    var sH = targetHeight * Math.pow(2, steps - 1);
+    var x = 2;
+
+    while (steps--) {
+      var canvas = document.createElement('canvas');
+      canvas.width = sW;
+      canvas.height = sH;
+      canvas.getContext('2d').drawImage(image, 0, 0, sW, sH);
+      image = canvas;
+
+      sW = Math.round(sW / x);
+      sH = Math.round(sH / x);
+    }
+
+    return image;
+  };
+
+  /**
+   * Save a <canvas> element's content to a Blob object.
+   *
+   * @param {HTMLCanvasElement} canvas
+   * @return {Promise}
+   */
+
+
+  ThumbnailGenerator.prototype.canvasToBlob = function canvasToBlob(canvas, type, quality) {
+    if (canvas.toBlob) {
+      return new Promise(function (resolve) {
+        canvas.toBlob(resolve, type, quality);
+      });
+    }
+    return Promise.resolve().then(function () {
+      return dataURItoBlob(canvas.toDataURL(type, quality), {});
+    });
+  };
+
+  /**
+   * Set the preview URL for a file.
+   */
+
+
+  ThumbnailGenerator.prototype.setPreviewURL = function setPreviewURL(fileID, preview) {
+    this.uppy.setFileState(fileID, { preview: preview });
+  };
+
+  ThumbnailGenerator.prototype.addToQueue = function addToQueue(item) {
+    this.queue.push(item);
+    if (this.queueProcessing === false) {
+      this.processQueue();
+    }
+  };
+
+  ThumbnailGenerator.prototype.processQueue = function processQueue() {
+    var _this3 = this;
+
+    this.queueProcessing = true;
+    if (this.queue.length > 0) {
+      var current = this.queue.shift();
+      return this.requestThumbnail(current).catch(function (err) {}) // eslint-disable-line handle-callback-err
+      .then(function () {
+        return _this3.processQueue();
+      });
+    } else {
+      this.queueProcessing = false;
+      this.uppy.log('[ThumbnailGenerator] Emptied thumbnail queue');
+      this.uppy.emit('thumbnail:all-generated');
+    }
+  };
+
+  ThumbnailGenerator.prototype.requestThumbnail = function requestThumbnail(file) {
+    var _this4 = this;
+
+    if (isPreviewSupported(file.type) && !file.isRemote) {
+      return this.createThumbnail(file, this.opts.thumbnailWidth, this.opts.thumbnailHeight).then(function (preview) {
+        _this4.setPreviewURL(file.id, preview);
+        _this4.uppy.log('[ThumbnailGenerator] Generated thumbnail for ' + file.id);
+        _this4.uppy.emit('thumbnail:generated', _this4.uppy.getFile(file.id), preview);
+      }).catch(function (err) {
+        _this4.uppy.log('[ThumbnailGenerator] Failed thumbnail for ' + file.id);
+        _this4.uppy.log(err, 'warning');
+        _this4.uppy.emit('thumbnail:error', _this4.uppy.getFile(file.id), err);
+      });
+    }
+    return Promise.resolve();
+  };
+
+  ThumbnailGenerator.prototype.onFileAdded = function onFileAdded(file) {
+    if (!file.preview) {
+      this.addToQueue(file);
+    }
+  };
+
+  ThumbnailGenerator.prototype.onFileRemoved = function onFileRemoved(file) {
+    var index = this.queue.indexOf(file);
+    if (index !== -1) {
+      this.queue.splice(index, 1);
+    }
+
+    // Clean up object URLs.
+    if (file.preview && isObjectURL(file.preview)) {
+      URL.revokeObjectURL(file.preview);
+    }
+  };
+
+  ThumbnailGenerator.prototype.onRestored = function onRestored() {
+    var _this5 = this;
+
+    var _uppy$getState = this.uppy.getState(),
+        files = _uppy$getState.files;
+
+    var fileIDs = Object.keys(files);
+    fileIDs.forEach(function (fileID) {
+      var file = _this5.uppy.getFile(fileID);
+      if (!file.isRestored) return;
+      // Only add blob URLs; they are likely invalid after being restored.
+      if (!file.preview || isObjectURL(file.preview)) {
+        _this5.addToQueue(file);
+      }
+    });
+  };
+
+  ThumbnailGenerator.prototype.install = function install() {
+    this.uppy.on('file-added', this.onFileAdded);
+    this.uppy.on('file-removed', this.onFileRemoved);
+    this.uppy.on('restored', this.onRestored);
+  };
+
+  ThumbnailGenerator.prototype.uninstall = function uninstall() {
+    this.uppy.off('file-added', this.onFileAdded);
+    this.uppy.off('file-removed', this.onFileRemoved);
+    this.uppy.off('restored', this.onRestored);
+  };
+
+  return ThumbnailGenerator;
+}(Plugin);
