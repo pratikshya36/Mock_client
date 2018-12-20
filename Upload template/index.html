@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en" >
+<head>
+ <meta charset="UTF-8">
+ <title>Upload files(s) here!</title>
+ <link rel='stylesheet'href='css/bootstrap-min.css'>
+ <link rel="stylesheet" href="css/style.css"> 
+ </head>
+ <body>
+
+  <div class="container">
+    <h1>
+      <p>Upload file(s) here!</p>
+    </h1>
+<div class="well" data-bind="fileDrag: multiFileData">
+    <div class="form-group row">
+        <div class="col-md-6">
+                  <!-- ko foreach: {data: multiFileData().dataURLArray, as: 'dataURL'} -->
+                  <img style="height: 100px; margin: 5px;" class="img-rounded thumb" data-bind="attr: { src: dataURL }, visible: dataURL">
+                  <!-- /ko -->
+            <div data-bind="ifnot: fileData().dataURL">
+                <label class="drag-label">Drag files here!</label>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <input type="file" multiple data-bind="fileInput: multiFileData, customFileInput: {
+              buttonClass: 'btn btn-success', fileNameClass: 'disabled form-control', onClear: onClear,}" accept=".pptx,.ppt">
+        </div>
+    </div>
+</div>
+  <button class="btn btn-info">Submit</button>
+</div>
+  <script src="js/jquery/jquery-min.js"></script>
+  <script src='js/ko-js.js'></script>
+  <script src="js/file-bindings.js"></script>
+  <script src="js/index.js"></script>
+
+</body>
+</html>
